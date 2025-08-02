@@ -54,3 +54,55 @@ def scrape_wuzzuf_jobs(query="python", pages=1):
                 })
 
     return jobs
+
+# === 3. Lambda entry point ===
+def lambda_handler(event, context):
+    # Example input:
+    # {
+    #   "cv_key": "cv-folder/user123.txt",
+    #   "pages": 2
+    # }
+
+    cv_key = event.get("cv_key")
+    pages = int(event.get("pages", 1))
+
+    if not cv_key:
+        return {"statusCode": 400, "body": "cv_key is required in the event."}
+
+    # === Load the CV from S3 ===
+    s3 = boto3.client("s3")
+    cv_obj = s3.get_object(Bucket=S3_BUCKET, Key=cv_key)
+    cv_text = cv_obj["Body"].read().decode("utf-8")
+
+    # === Extract top keywords from the CV ===
+    keywords = extract_keywords_from_text(cv_text)
+    print("Extracted keywords:", keywords)
+
+    # === Scrape jobs for each keyword ===
+    all_jobs = []
+    for kw in keywords:
+        jobs = scrape_wuzzuf_jobs(query=kw, pages=pages)
+        all_jobs.extend(jobs)
+
+    # === Remove duplicates (by URL) ===
+    unique_jobs = {job["url"]: job for job in all_jobs}.values()
+
+    # === Save results to S3 ===
+    timestamp = datetime.datetime.now().isoformat()
+    out_key = f"wuzzuf_matched_jobs/{cv_key.replace('/', '_')}_{timestamp}.json"
+    s3.put_object(
+        Bucket=S3_BUCKET,
+        Key=out_key,
+        Body=json.dumps(list(unique_jobs)),
+        ContentType="application/json"
+    )
+
+    return {
+        "statusCode": 200,
+        "body": json.dumps({
+            "message": "Scraped based on CV",
+            "cv_used": cv_key,
+            "keywords": keywords,
+            "results_file": out_key
+        })
+    }
