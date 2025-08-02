@@ -57,41 +57,42 @@ def scrape_wuzzuf_jobs(query="python", pages=1):
 
 # === 3. Lambda entry point ===
 def lambda_handler(event, context):
-    # Example input:
-    # {
-    #   "cv_key": "cv-folder/user123.txt",
-    #   "pages": 2
-    # }
+    # S3 trigger structure
+    try:
+        record = event["Records"][0]
+        s3_bucket = record["s3"]["bucket"]["name"]
+        cv_key = record["s3"]["object"]["key"]
+    except Exception as e:
+        return {"statusCode": 400, "body": f"Invalid event format: {str(e)}"}
 
-    cv_key = event.get("cv_key")
-    pages = int(event.get("pages", 1))
+    # Optional: fallback/default
+    pages = 1  # You can hardcode or look up from metadata
 
-    if not cv_key:
-        return {"statusCode": 400, "body": "cv_key is required in the event."}
-
-    # === Load the CV from S3 ===
     s3 = boto3.client("s3")
-    cv_obj = s3.get_object(Bucket=S3_BUCKET, Key=cv_key)
+
+    # Read the CV file from S3
+    cv_obj = s3.get_object(Bucket=s3_bucket, Key=cv_key)
     cv_text = cv_obj["Body"].read().decode("utf-8")
 
-    # === Extract top keywords from the CV ===
+    # Extract keywords from CV
     keywords = extract_keywords_from_text(cv_text)
     print("Extracted keywords:", keywords)
 
-    # === Scrape jobs for each keyword ===
+    # Scrape Wuzzuf jobs
     all_jobs = []
     for kw in keywords:
         jobs = scrape_wuzzuf_jobs(query=kw, pages=pages)
         all_jobs.extend(jobs)
 
-    # === Remove duplicates (by URL) ===
+    # Remove duplicates
     unique_jobs = {job["url"]: job for job in all_jobs}.values()
 
-    # === Save results to S3 ===
+    # Save job results back to S3
     timestamp = datetime.datetime.now().isoformat()
     out_key = f"wuzzuf_matched_jobs/{cv_key.replace('/', '_')}_{timestamp}.json"
+
     s3.put_object(
-        Bucket=S3_BUCKET,
+        Bucket=s3_bucket,
         Key=out_key,
         Body=json.dumps(list(unique_jobs)),
         ContentType="application/json"
@@ -100,7 +101,7 @@ def lambda_handler(event, context):
     return {
         "statusCode": 200,
         "body": json.dumps({
-            "message": "Scraped based on CV",
+            "message": "Triggered by S3 upload",
             "cv_used": cv_key,
             "keywords": keywords,
             "results_file": out_key
